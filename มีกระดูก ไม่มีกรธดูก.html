@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AR Science: Vertebrate vs Invertebrate</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600;800&display=swap');
+        
+        body {
+            font-family: 'Kanit', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0f172a;
+            color: white;
+            touch-action: none;
+        }
+
+        .mirror-video {
+            transform: scaleX(-1);
+            object-fit: cover;
+        }
+
+        @keyframes popIn {
+            0% { transform: scale(0.85); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop-in { animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-10px); }
+            20%, 40%, 60%, 80% { transform: translateX(10px); }
+        }
+        .animate-shake { animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both; }
+
+        .red-flash {
+            box-shadow: inset 0 0 100px rgba(239, 68, 68, 0.8);
+            transition: box-shadow 0.3s ease-out;
+        }
+
+        #time-bar { transition: width 0.1s linear, background-color 0.3s ease; }
+        
+        @keyframes scan {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(200%); }
+        }
+
+        .zone-highlight-left {
+            box-shadow: 0 0 40px rgba(59, 130, 246, 0.8), inset 0 0 20px rgba(59, 130, 246, 0.5) !important;
+            border-color: rgba(96, 165, 250, 1) !important;
+            transform: scale(1.1);
+            background-color: rgba(15, 23, 42, 0.8) !important;
+        }
+        .zone-highlight-right {
+            box-shadow: 0 0 40px rgba(34, 197, 94, 0.8), inset 0 0 20px rgba(34, 197, 94, 0.5) !important;
+            border-color: rgba(74, 222, 128, 1) !important;
+            transform: scale(1.1);
+            background-color: rgba(15, 23, 42, 0.8) !important;
+        }
+    </style>
+</head>
+<body class="relative w-full h-screen select-none">
+
+    <!-- Video Layer -->
+    <video id="input-video" class="absolute top-0 left-0 w-full h-full mirror-video hidden" autoplay playsinline></video>
+    
+    <!-- Canvas Layer for Tracking & Particles -->
+    <canvas id="output-canvas" class="absolute top-0 left-0 w-full h-full z-10 pointer-events-none"></canvas>
+
+    <!-- Main Game UI Layer (HUD Style) -->
+    <div id="game-ui" class="absolute inset-0 z-20 flex flex-col hidden pointer-events-none overflow-hidden">
+        
+        <!-- HUD Header -->
+        <div class="w-full p-4 md:p-6 flex justify-between items-start z-40 pointer-events-none">
+            
+            <!-- Left: Score & Combo -->
+            <div class="flex flex-col gap-2 pointer-events-auto">
+                <div class="bg-slate-950/70 backdrop-blur-md px-4 py-2 rounded-2xl border border-slate-700/60 shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                    <span class="text-xl md:text-3xl font-black text-blue-400 drop-shadow-[0_0_8px_rgba(96,165,250,0.8)] tracking-wider">SCORE: <span id="score-display" class="text-white">0</span></span>
+                </div>
+                <div class="bg-slate-950/70 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-700/60 inline-block w-fit">
+                    <span class="text-sm md:text-lg text-yellow-400 font-bold drop-shadow-[0_0_5px_rgba(250,204,21,0.6)]" id="combo-display">COMBO x0</span>
+                </div>
+            </div>
+            
+            <!-- Center: Level & Timer -->
+            <div class="flex flex-col items-center w-1/3 max-w-sm pointer-events-auto pt-1">
+                <span class="text-sm md:text-base font-bold mb-2 text-white bg-slate-900/60 px-4 py-1 rounded-full backdrop-blur-sm border border-slate-600/50" id="level-display">Level 1: Easy</span>
+                <div class="w-full bg-slate-950/80 h-3 md:h-4 rounded-full overflow-hidden border-2 border-slate-700 relative shadow-[0_0_10px_rgba(0,0,0,0.8)]">
+                    <div id="time-bar" class="h-full bg-gradient-to-r from-green-400 to-emerald-500 w-full rounded-full"></div>
+                </div>
+            </div>
+
+            <!-- Right: Controls -->
+            <div class="flex flex-col items-end pointer-events-auto gap-2">
+                <button id="fallback-btn" class="bg-slate-900/70 hover:bg-slate-800 backdrop-blur-md border border-slate-600/60 text-white px-3 py-2 rounded-xl transition shadow-lg flex items-center gap-2 text-sm font-medium">
+                    🖱️ <span class="hidden md:inline">ใช้เมาส์/นิ้ว</span>
+                </button>
+                <span class="text-[10px] text-slate-400 bg-slate-900/50 px-2 py-0.5 rounded border border-slate-700/50">FPS: <span id="fps-display">0</span></span>
+            </div>
+        </div>
+
+        <!-- Gameplay Targets (Floating Pads) -->
+        <div class="absolute inset-0 w-full h-full pointer-events-none">
+            
+            <!-- Left Target (Vertebrate) -->
+            <div id="zone-left" class="absolute left-4 md:left-12 top-1/2 -translate-y-1/2 flex flex-col items-center justify-center p-4 rounded-3xl bg-slate-900/50 backdrop-blur-md border-2 border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.2)] transition-all duration-300 pointer-events-auto w-28 md:w-40 h-36 md:h-48">
+                <div class="w-14 h-14 md:w-20 md:h-20 mb-2 md:mb-3 rounded-full bg-blue-500/20 border-4 border-blue-400 flex items-center justify-center text-3xl md:text-4xl shadow-[0_0_15px_rgba(96,165,250,0.5)]">
+                    🦴
+                </div>
+                <h2 class="text-sm md:text-lg font-black text-blue-400 text-center leading-tight drop-shadow-md">มีกระดูก<br>สันหลัง</h2>
+            </div>
+
+            <!-- Right Target (Invertebrate) -->
+            <div id="zone-right" class="absolute right-4 md:right-12 top-1/2 -translate-y-1/2 flex flex-col items-center justify-center p-4 rounded-3xl bg-slate-900/50 backdrop-blur-md border-2 border-green-500/50 shadow-[0_0_20px_rgba(34,197,94,0.2)] transition-all duration-300 pointer-events-auto w-28 md:w-40 h-36 md:h-48">
+                <div class="w-14 h-14 md:w-20 md:h-20 mb-2 md:mb-3 rounded-full bg-green-500/20 border-4 border-green-400 flex items-center justify-center text-3xl md:text-4xl shadow-[0_0_15px_rgba(74,222,128,0.5)]">
+                    🐙
+                </div>
+                <h2 class="text-sm md:text-lg font-black text-green-400 text-center leading-tight drop-shadow-md">ไม่มีกระดูก<br>สันหลัง</h2>
+            </div>
+        </div>
+
+        <!-- Center Hologram Card (ขนาดเล็กตามที่คุณต้องการ) -->
+        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-auto">
+            <div id="animal-card" class="bg-slate-900/60 backdrop-blur-lg p-2 md:p-3 rounded-[1.5rem] animate-pop-in shadow-[0_0_40px_rgba(0,0,0,0.6)] border-2 border-indigo-500/40 flex flex-col items-center transition-all duration-300">
+                <div class="w-28 h-28 md:w-36 md:h-36 relative rounded-xl overflow-hidden bg-slate-800 border-2 border-indigo-400/30 shadow-inner flex items-center justify-center">
+                    <!-- Hologram Scanline Effect -->
+                    <div class="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/20 to-transparent w-full h-1/2 animate-[scan_2s_ease-in-out_infinite] z-20 pointer-events-none mix-blend-screen"></div>
+                    
+                    <img id="animal-image" src="" alt="Animal" referrerpolicy="no-referrer" class="w-full h-full object-cover z-10 transition-transform duration-300 hover:scale-110">
+                </div>
+                <div id="animal-name-box" class="mt-3 bg-gradient-to-r from-indigo-600 to-blue-600 px-4 py-1 md:py-1.5 rounded-full font-black shadow-[0_0_15px_rgba(79,70,229,0.5)] whitespace-nowrap text-xs md:text-sm text-white border border-indigo-400/50 tracking-wide uppercase">
+                    กำลังโหลด...
+                </div>
+            </div>
+        </div>
+        
+        <!-- Instruction Footer -->
+        <div class="absolute bottom-6 left-1/2 transform -translate-x-1/2 w-[90%] max-w-md pointer-events-none z-40">
+            <div class="bg-slate-950/70 backdrop-blur-md border border-slate-600/50 rounded-full py-2.5 px-4 text-center shadow-lg">
+                <p class="text-xs md:text-sm font-bold text-slate-200">
+                    🎯 เลื่อนเป้าด้วย <span class="text-cyan-400">จมูก</span> และ <span class="text-yellow-400 font-extrabold underline">"อ้าปาก"</span> เพื่อเลือก!
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Start Menu Screen -->
+    <div id="screen-start" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4">
+        <div class="bg-slate-900/80 max-w-2xl w-full p-8 rounded-3xl text-center shadow-2xl animate-pop-in border border-blue-500/40">
+            <div class="inline-block p-3 rounded-2xl bg-blue-500/20 mb-3 border border-blue-400/30">
+                <span class="text-4xl">🧬</span>
+            </div>
+            <h1 class="text-4xl md:text-5xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-300 to-green-400 drop-shadow-sm">
+                WebAR Science Game
+            </h1>
+            <h2 class="text-xl md:text-2xl mb-6 text-slate-200 font-semibold">การจำแนกประเภทสัตว์ (Vertebrate vs Invertebrate)</h2>
+            
+            <div class="text-left bg-slate-950/80 p-5 rounded-2xl mb-6 border border-slate-700/60 text-sm md:text-base leading-relaxed">
+                <h3 class="text-lg font-bold mb-3 text-yellow-300 flex items-center gap-2">
+                    <span>💡</span> วิธีการควบคุมเกม
+                </h3>
+                <ul class="space-y-2 text-slate-200">
+                    <li class="flex items-start gap-2">
+                        <span class="text-blue-400 font-bold">•</span>
+                        <span><b>โหมด AR (แนะนำ):</b> ระบบใช้ AI ตรวจจับตำแหน่งปลายจมูกเพื่อเลื่อนเป้า และตรวจจับการ <b>"อ้าปาก"</b> เพื่อเลือกตอบ</span>
+                    </li>
+                    <li class="flex items-start gap-2">
+                        <span class="text-green-400 font-bold">•</span>
+                        <span><b>โหมดเมาส์/สัมผัส:</b> ใช้เมาส์หรือนิ้วแตะเลื่อนไปยังฝั่งที่ต้องการ แล้วคลิกเพื่อเลือก</span>
+                    </li>
+                </ul>
+            </div>
+            
+            <div class="flex flex-col sm:flex-row justify-center gap-4">
+                <button id="btn-start-ar" class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3.5 px-8 rounded-full shadow-lg transform transition hover:scale-105 text-lg flex items-center justify-center gap-2 border border-blue-300/30">
+                    <span>📷</span> เริ่มเล่นด้วย AR (เปิดกล้อง)
+                </button>
+                <button id="btn-start-mouse" class="bg-slate-700 hover:bg-slate-600 text-white font-bold py-3.5 px-8 rounded-full shadow-lg transform transition hover:scale-105 text-base border border-slate-500/40">
+                    🖱️ เล่นด้วยเมาส์ / นิ้ว
+                </button>
+            </div>
+            <p id="camera-loading" class="mt-4 text-sm text-yellow-300 hidden animate-pulse font-medium">⏳ กำลังเชื่อมต่อระบบกล้อง AI กรุณารอสักครู่...</p>
+        </div>
+    </div>
+
+    <!-- Knowledge Pop-up Screen -->
+    <div id="screen-knowledge" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-lg p-4 hidden">
+        <div class="bg-slate-900/90 max-w-2xl w-full p-8 rounded-3xl shadow-2xl animate-pop-in text-center border border-yellow-500/40">
+            <div class="text-5xl mb-2">🎉</div>
+            <h2 class="text-3xl md:text-4xl font-extrabold mb-1 text-yellow-400">ผ่านด่านเรียบร้อย!</h2>
+            <h3 class="text-xl md:text-2xl mb-6 text-white font-semibold" id="knowledge-title">สรุปความรู้ประจำด่าน</h3>
+            
+            <div class="bg-slate-950/90 p-6 rounded-2xl mb-6 text-left leading-relaxed text-slate-100 text-base md:text-lg border border-blue-500/30 shadow-inner">
+                <p id="knowledge-text">
+                    <!-- Dynamic Knowledge Content -->
+                </p>
+            </div>
+            
+            <button id="btn-next-level" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-4 px-12 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.5)] transform transition hover:scale-105 text-xl">
+                ลุยด่านต่อไป ➔
+            </button>
+        </div>
+    </div>
+
+    <!-- End Game Screen -->
+    <div id="screen-end" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/95 backdrop-blur-xl p-4 hidden">
+        <div class="bg-slate-900/90 max-w-xl w-full p-8 md:p-10 rounded-3xl shadow-2xl animate-pop-in text-center border-t-8 border-t-yellow-400 border-slate-700">
+            <h1 class="text-5xl md:text-6xl font-black mb-3 text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-amber-400 to-yellow-500 drop-shadow">
+                🏆 ALL CLEAR!
+            </h1>
+            <p class="text-lg md:text-xl mb-6 text-slate-200 font-medium">คุณแยกแยะประเภทสัตว์ได้ถูกต้องและยอดเยี่ยมมาก!</p>
+            
+            <div class="flex justify-center gap-3 mb-6" id="star-container">
+                <!-- Stars rendered via JS -->
+            </div>
+
+            <div class="bg-slate-950/80 p-6 rounded-2xl mb-8 w-full max-w-sm mx-auto border border-slate-700">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-slate-300 text-base">คะแนนรวมทั้งหมด:</span>
+                    <span class="text-3xl font-extrabold text-blue-400" id="final-score">0</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-300 text-base">คอมโบสูงสุด:</span>
+                    <span class="text-2xl font-bold text-yellow-400" id="final-combo">x0</span>
+                </div>
+            </div>
+            
+            <button onclick="location.reload()" class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3.5 px-10 rounded-full shadow-lg transform transition hover:scale-105 text-lg border border-blue-300/30">
+                🔄 เล่นใหม่อีกครั้ง
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- DATA & ANIMAL DATASET WITH RELIABLE FALLBACKS ---
+        
+        // Tone.js Sound Setup
+        let gameSynth;
+        function initSound() {
+            if (!gameSynth) {
+                gameSynth = new Tone.PolySynth(Tone.Synth, {
+                    oscillator: { type: "triangle" },
+                    envelope: { attack: 0.05, decay: 0.1, sustain: 0.3, release: 1 }
+                }).toDestination();
+            }
+        }
+
+        function playCorrectSound() {
+            if (gameSynth && Tone.context.state === 'running') {
+                const now = Tone.now();
+                gameSynth.triggerAttackRelease("C5", "16n", now);
+                gameSynth.triggerAttackRelease("E5", "16n", now + 0.1);
+                gameSynth.triggerAttackRelease("G5", "16n", now + 0.2);
+                gameSynth.triggerAttackRelease("C6", "8n", now + 0.3);
+            }
+        }
+
+        function playWrongSound() {
+            if (gameSynth && Tone.context.state === 'running') {
+                const now = Tone.now();
+                gameSynth.triggerAttackRelease("Eb4", "8n", now);
+                gameSynth.triggerAttackRelease("A3", "4n", now + 0.2);
+            }
+        }
+        
+        function createAnimalSVGDataURI(name, colorBg, emoji) {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+                <rect width="400" height="400" fill="${colorBg}"/>
+                <circle cx="200" cy="180" r="110" fill="rgba(255,255,255,0.15)"/>
+                <text x="200" y="210" font-size="110" text-anchor="middle" dominant-baseline="middle">${emoji}</text>
+                <text x="200" y="340" font-size="28" font-family="sans-serif" font-weight="bold" fill="#ffffff" text-anchor="middle">${name}</text>
+            </svg>`;
+            return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+        }
+
+        const levelData = [
+            {
+                level: 1,
+                name: "Easy (สัตว์ที่พบเห็นบ่อย)",
+                timeLimit: 15,
+                knowledgeText: "<b>สัตว์มีกระดูกสันหลัง (Vertebrates)</b> มีแกนกระดูกแข็งพยุงอยู่ภายในร่างกาย ช่วยให้ร่างกายคงรูปและเคลื่อนไหวได้ดี เช่น สุนัข และ ปลาทอง<br><br><b>สัตว์ไม่มีกระดูกสันหลัง (Invertebrates)</b> ไม่พบโครงกระดูกภายใน เช่น ไส้เดือน (ลำตัวอ่อนนุ่ม) และ แมงมุม (มีเปลือกแข็งหุ้มภายนอก)",
+                animals: [
+                    { 
+                        name: "สุนัข (Dog)", 
+                        type: "vertebrate", 
+                        img: "https://images.unsplash.com/photo-1543466835-00a7907e9de1?auto=format&fit=crop&w=600&q=80",
+                        fallbackSvg: createAnimalSVGDataURI("สุนัข (Dog)", "#1e3a8a", "🐕")
+                    },
+                    { 
+                        name: "ไส้เดือน (Earthworm)", 
+                        type: "invertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ7gFBzitA8L8dvVoSkHabpnBG65fdxH1L1BlfnInNjVXAGZH-2fcqb_R9pODpDDCayWBhNULaG6oZDMyf-qvI8H2jukp0rmG_G46Cz6-zYnw&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("ไส้เดือน (Earthworm)", "#065f46", "🪱")
+                    },
+                    { 
+                        name: "ปลาทอง (Goldfish)", 
+                        type: "vertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQe4TEVCr8Cp8jGBILKCSrkgjulfJVNyAlSWDtQPJq58w&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("ปลาทอง (Goldfish)", "#9a3412", "🐠")
+                    },
+                    { 
+                        name: "แมงมุม (Spider)", 
+                        type: "invertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT5JEUcyFLM2tn31CMwl7-H2xee8ocK5kPH3kIvkDlmeQ&s",
+                        fallbackSvg: createAnimalSVGDataURI("แมงมุม (Spider)", "#312e81", "🕷️")
+                    }
+                ]
+            },
+            {
+                level: 2,
+                name: "Medium (สัตว์ที่ซับซ้อนขึ้น)",
+                timeLimit: 12,
+                knowledgeText: "รู้หรือไม่? <b>งู</b> แม้จะเคลื่อนที่เรียบลื่น แต่งูเป็นสัตว์มีกระดูกสันหลังที่มีข้อต่อกระดูกเรียงยาวหลายร้อยชิ้น!<br><br>ส่วน <b>หมึกยักษ์</b> และ <b>หอยทาก</b> แม้จะมีโครงสร้างแข็งหรือเปลือกภายนอกในบางชนิด แต่ไม่มีแกนกระดูกสันหลังเลย จึงจัดเป็นสัตว์ไม่มีกระดูกสันหลัง",
+                animals: [
+                    { 
+                        name: "กบ (Frog)", 
+                        type: "vertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSynzqRJd9toAYcBbbjA64gh1UOc6HqcSgM3CMQwPA4qA&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("กบ (Frog)", "#166534", "🐸")
+                    },
+                    { 
+                        name: "หมึกยักษ์ (Octopus)", 
+                        type: "invertebrate", 
+                        img: "https://c.files.bbci.co.uk/11F73/production/_120878537_4cfca0d7-2b27-474f-93b7-4c31269c5cdf.jpg",
+                        fallbackSvg: createAnimalSVGDataURI("หมึกยักษ์ (Octopus)", "#581c87", "🐙")
+                    },
+                    { 
+                        name: "งู (Snake)", 
+                        type: "vertebrate", 
+                        img: "https://static.thairath.co.th/media/dFQROr7oWzulq5Fa6rV42sDA9iPy26IIN2wcRWtprordDKJdNUJ0WOy77gkCa4bL9Np.jpg",
+                        fallbackSvg: createAnimalSVGDataURI("งู (Snake)", "#3f6212", "🐍")
+                    },
+                    { 
+                        name: "หอยทาก (Snail)", 
+                        type: "invertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSaOAPG3u9yv5TLbUVUDGGHr06q0YIoKqilgoqFYZqF4A&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("หอยทาก (Snail)", "#854d0e", "🐌")
+                    }
+                ]
+            },
+            {
+                level: 3,
+                name: "Hard (สัตว์ที่มักเข้าใจผิด)",
+                timeLimit: 8,
+                knowledgeText: "ยอดเยี่ยมมาก! คุณแยกแยะสัตว์ทะเลได้แม่นยำ<br><br><b>ม้าน้ำ</b> และ <b>ฉลาม</b> จัดเป็นปลา จึงมีกระดูกสันหลัง (ฉลามมีกระดูกอ่อน)<br><br>ส่วน <b>ดาวทะเล</b> และ <b>แมงกะพรุน</b> แม้จะอาศัยในน้ำ แต่มันไม่มีแกนกระดูกสันหลังเลย!",
+                animals: [
+                    { 
+                        name: "ม้าน้ำ (Seahorse)", 
+                        type: "vertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRoF2wkkME5qY1QozJbHex122TKcKnhfvrUF7kueDxUaw&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("ม้าน้ำ (Seahorse)", "#075985", "🐴")
+                    },
+                    { 
+                        name: "แมงกะพรุน (Jellyfish)", 
+                        type: "invertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS3tA_xNYFVwKaqutU43sRuIWYXZr_7wjZP38VSL-4szg&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("แมงกะพรุน (Jellyfish)", "#831843", "🪼")
+                    },
+                    { 
+                        name: "ฉลาม (Shark)", 
+                        type: "vertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRtES1BMuMrX3bBujtA-UiiUE2hzHMIomwy55Qd1Mb5Kw&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("ฉลาม (Shark)", "#1e293b", "🦈")
+                    },
+                    { 
+                        name: "ดาวทะเล (Starfish)", 
+                        type: "invertebrate", 
+                        img: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSda17o5OG9m7P1xHBtHmQL0D9qS9VQYazdjKpSMNHKPQ&s=10",
+                        fallbackSvg: createAnimalSVGDataURI("ดาวทะเล (Starfish)", "#9f1239", "⭐")
+                    }
+                ]
+            }
+        ];
+
+        const gameState = {
+            mode: 'ar',
+            status: 'start',
+            currentLevel: 0,
+            currentAnimalIdx: 0,
+            score: 0,
+            combo: 0,
+            maxCombo: 0,
+            timeRemaining: 0,
+            timerInterval: null,
+            cursor: { x: window.innerWidth / 2, y: window.innerHeight / 2, isClicking: false },
+            canClick: true,
+            particles: []
+        };
+
+        const DOM = {
+            screens: {
+                start: document.getElementById('screen-start'),
+                knowledge: document.getElementById('screen-knowledge'),
+                end: document.getElementById('screen-end'),
+                ui: document.getElementById('game-ui')
+            },
+            game: {
+                score: document.getElementById('score-display'),
+                combo: document.getElementById('combo-display'),
+                level: document.getElementById('level-display'),
+                timeBar: document.getElementById('time-bar'),
+                animalCard: document.getElementById('animal-card'),
+                animalImg: document.getElementById('animal-image'),
+                animalName: document.getElementById('animal-name-box'),
+                zoneLeft: document.getElementById('zone-left'),
+                zoneRight: document.getElementById('zone-right'),
+                fps: document.getElementById('fps-display')
+            },
+            canvas: document.getElementById('output-canvas'),
+            ctx: document.getElementById('output-canvas').getContext('2d'),
+            video: document.getElementById('input-video')
+        };
+
+        function resizeCanvas() {
+            DOM.canvas.width = window.innerWidth;
+            DOM.canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function initGame(mode) {
+            gameState.mode = mode;
+            gameState.currentLevel = 0;
+            gameState.score = 0;
+            gameState.combo = 0;
+            gameState.maxCombo = 0;
+            
+            DOM.screens.start.classList.add('hidden');
+            DOM.screens.ui.classList.remove('hidden');
+            
+            if(mode === 'mouse') {
+                setupMouseFallback();
+            }
+
+            startLevel();
+        }
+
+        function startLevel() {
+            gameState.status = 'playing';
+            gameState.currentAnimalIdx = 0;
+            const levelInfo = levelData[gameState.currentLevel];
+            
+            DOM.game.level.innerText = `Level ${levelInfo.level}: ${levelInfo.name}`;
+            loadAnimal();
+        }
+
+        function loadAnimal() {
+            if (gameState.currentAnimalIdx >= levelData[gameState.currentLevel].animals.length) {
+                showKnowledge();
+                return;
+            }
+
+            const animal = levelData[gameState.currentLevel].animals[gameState.currentAnimalIdx];
+            
+            DOM.game.animalImg.onerror = function() {
+                this.onerror = null;
+                this.src = animal.fallbackSvg;
+            };
+            DOM.game.animalImg.src = animal.img;
+            DOM.game.animalName.innerText = animal.name;
+            
+            DOM.game.animalCard.className = "bg-slate-900/60 backdrop-blur-lg p-2 md:p-3 rounded-[1.5rem] animate-pop-in shadow-[0_0_40px_rgba(0,0,0,0.6)] border-2 border-indigo-500/40 flex flex-col items-center transition-all duration-300";
+            
+            const timeLimit = levelData[gameState.currentLevel].timeLimit;
+            gameState.timeRemaining = timeLimit;
+            updateTimerUI(timeLimit);
+            
+            clearInterval(gameState.timerInterval);
+            gameState.timerInterval = setInterval(() => {
+                gameState.timeRemaining -= 0.1;
+                updateTimerUI(timeLimit);
+                if (gameState.timeRemaining <= 0) {
+                    clearInterval(gameState.timerInterval);
+                    handleAnswer("timeout");
+                }
+            }, 100);
+            
+            gameState.canClick = false;
+            setTimeout(() => { gameState.canClick = true; }, 700);
+        }
+
+        function updateTimerUI(maxTime) {
+            let percentage = (gameState.timeRemaining / maxTime) * 100;
+            if(percentage < 0) percentage = 0;
+            DOM.game.timeBar.style.width = `${percentage}%`;
+            
+            if(percentage > 50) DOM.game.timeBar.style.backgroundColor = '#22c55e';
+            else if(percentage > 20) DOM.game.timeBar.style.backgroundColor = '#eab308';
+            else DOM.game.timeBar.style.backgroundColor = '#ef4444';
+        }
+
+        function attemptClassification() {
+            if (!gameState.canClick || gameState.status !== 'playing') return;
+            
+            const screenWidth = window.innerWidth;
+            const thirdWidth = screenWidth / 3;
+            let selectedType = null;
+            
+            if (gameState.cursor.x < thirdWidth) {
+                selectedType = "vertebrate";
+            } else if (gameState.cursor.x > screenWidth - thirdWidth) {
+                selectedType = "invertebrate";
+            }
+
+            if (selectedType) {
+                gameState.canClick = false;
+                clearInterval(gameState.timerInterval);
+                handleAnswer(selectedType);
+            }
+        }
+
+        function handleAnswer(selectedType) {
+            const animal = levelData[gameState.currentLevel].animals[gameState.currentAnimalIdx];
+            const isCorrect = selectedType === animal.type;
+
+            if (isCorrect) {
+                playCorrectSound();
+                gameState.score += 100 + (gameState.timeRemaining * 10) + (gameState.combo * 25);
+                gameState.score = Math.floor(gameState.score);
+                gameState.combo++;
+                if (gameState.combo > gameState.maxCombo) gameState.maxCombo = gameState.combo;
+                
+                DOM.game.animalCard.classList.add('border-green-400');
+                createParticles(DOM.game.animalCard.getBoundingClientRect());
+            } else {
+                playWrongSound();
+                gameState.combo = 0;
+                document.body.classList.add('red-flash', 'animate-shake');
+                DOM.game.animalCard.classList.add('border-red-500');
+                
+                setTimeout(() => {
+                    document.body.classList.remove('red-flash', 'animate-shake');
+                }, 500);
+            }
+
+            DOM.game.score.innerText = gameState.score;
+            DOM.game.combo.innerText = `COMBO x${gameState.combo}`;
+            
+            setTimeout(() => {
+                gameState.currentAnimalIdx++;
+                loadAnimal();
+            }, 900);
+        }
+
+        function showKnowledge() {
+            gameState.status = 'knowledge';
+            DOM.screens.ui.classList.add('hidden');
+            DOM.screens.knowledge.classList.remove('hidden');
+            
+            const levelInfo = levelData[gameState.currentLevel];
+            document.getElementById('knowledge-title').innerText = `สรุปความรู้: ${levelInfo.name}`;
+            document.getElementById('knowledge-text').innerHTML = levelInfo.knowledgeText;
+        }
+
+        document.getElementById('btn-next-level').addEventListener('click', () => {
+            DOM.screens.knowledge.classList.add('hidden');
+            gameState.currentLevel++;
+            
+            if (gameState.currentLevel >= levelData.length) {
+                endGame();
+            } else {
+                DOM.screens.ui.classList.remove('hidden');
+                startLevel();
+            }
+        });
+
+        function endGame() {
+            gameState.status = 'end';
+            DOM.screens.end.classList.remove('hidden');
+            
+            document.getElementById('final-score').innerText = gameState.score;
+            document.getElementById('final-combo').innerText = `x${gameState.maxCombo}`;
+            
+            let stars = 1;
+            if (gameState.score > 2500) stars = 2;
+            if (gameState.score > 4000 && gameState.maxCombo >= 4) stars = 3;
+
+            const starContainer = document.getElementById('star-container');
+            starContainer.innerHTML = '';
+            for(let i = 0; i < 3; i++) {
+                const star = document.createElement('span');
+                star.innerHTML = '⭐';
+                star.className = `text-5xl ${i < stars ? 'animate-pop-in' : 'opacity-20 grayscale'}`;
+                star.style.animationDelay = `${i * 0.25}s`;
+                starContainer.appendChild(star);
+            }
+        }
+
+        let faceMesh;
+        let camera;
+
+        async function initAR() {
+            document.getElementById('btn-start-ar').classList.add('hidden');
+            document.getElementById('btn-start-mouse').classList.add('hidden');
+            document.getElementById('camera-loading').classList.remove('hidden');
+
+            faceMesh = new FaceMesh({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+            }});
+
+            faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            faceMesh.onResults(onARResults);
+
+            try {
+                camera = new Camera(DOM.video, {
+                    onFrame: async () => {
+                        await faceMesh.send({image: DOM.video});
+                    },
+                    width: 640,
+                    height: 480
+                });
+                await camera.start();
+                DOM.video.classList.remove('hidden'); // แสดงกล้องตลอดเวลา
+                initGame('ar');
+            } catch (error) {
+                console.error("Camera error:", error);
+                initGame('mouse');
+            }
+        }
+
+        function onARResults(results) {
+            if (gameState.status !== 'playing') return;
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                
+                // Nose Landmark (1) for mirrored Cursor Position
+                const nose = landmarks[1];
+                gameState.cursor.x = (1 - nose.x) * window.innerWidth;
+                gameState.cursor.y = nose.y * window.innerHeight;
+
+                // Mouth Open Detection (Landmark 13 upper inner lip, Landmark 14 lower inner lip)
+                const upperLip = landmarks[13];
+                const lowerLip = landmarks[14];
+                
+                const dx = upperLip.x - lowerLip.x;
+                const dy = upperLip.y - lowerLip.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                const MOUTH_OPEN_THRESHOLD = 0.045;
+                
+                if (distance > MOUTH_OPEN_THRESHOLD) {
+                    gameState.cursor.isClicking = true;
+                    attemptClassification();
+                } else {
+                    gameState.cursor.isClicking = false;
+                }
+            }
+        }
+
+        let lastTime = 0;
+        let frameCount = 0;
+
+        function drawLoop(timestamp) {
+            if(timestamp - lastTime >= 1000) {
+                DOM.game.fps.innerText = frameCount;
+                frameCount = 0;
+                lastTime = timestamp;
+            }
+            frameCount++;
+
+            DOM.ctx.clearRect(0, 0, DOM.canvas.width, DOM.canvas.height);
+
+            if (gameState.status === 'playing') {
+                updateUIZones();
+                drawCursor();
+                updateAndDrawParticles();
+            }
+
+            requestAnimationFrame(drawLoop);
+        }
+
+        function updateUIZones() {
+            const screenWidth = window.innerWidth;
+            const thirdWidth = screenWidth / 3;
+            
+            if (gameState.cursor.x < thirdWidth) {
+                DOM.game.zoneLeft.classList.add('zone-highlight-left');
+                DOM.game.zoneRight.classList.remove('zone-highlight-right');
+            } else if (gameState.cursor.x > screenWidth - thirdWidth) {
+                DOM.game.zoneRight.classList.add('zone-highlight-right');
+                DOM.game.zoneLeft.classList.remove('zone-highlight-left');
+            } else {
+                DOM.game.zoneLeft.classList.remove('zone-highlight-left');
+                DOM.game.zoneRight.classList.remove('zone-highlight-right');
+            }
+        }
+
+        function drawCursor() {
+            const ctx = DOM.ctx;
+            const { x, y, isClicking } = gameState.cursor;
+
+            ctx.beginPath();
+            
+            if (isClicking) {
+                ctx.arc(x, y, 28, 0, 2 * Math.PI);
+                ctx.fillStyle = 'rgba(250, 204, 21, 0.85)';
+                ctx.fill();
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = '#ffffff';
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 10, 0, 2 * Math.PI);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+            } else {
+                ctx.arc(x, y, 18, 0, 2 * Math.PI);
+                ctx.fillStyle = 'rgba(56, 189, 248, 0.7)';
+                ctx.fill();
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.stroke();
+            }
+        }
+
+        function createParticles(rect) {
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            for (let i = 0; i < 35; i++) {
+                gameState.particles.push({
+                    x: centerX,
+                    y: centerY,
+                    vx: (Math.random() - 0.5) * 16,
+                    vy: (Math.random() - 0.5) * 16,
+                    radius: Math.random() * 6 + 3,
+                    color: `hsl(${Math.random() * 60 + 110}, 100%, 55%)`,
+                    life: 1.0
+                });
+            }
+        }
+
+        function updateAndDrawParticles() {
+            const ctx = DOM.ctx;
+            for (let i = gameState.particles.length - 1; i >= 0; i--) {
+                let p = gameState.particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.025;
+                
+                if (p.life <= 0) {
+                    gameState.particles.splice(i, 1);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color;
+                    ctx.globalAlpha = p.life;
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+        }
+
+        function setupMouseFallback() {
+            window.addEventListener('mousemove', (e) => {
+                if(gameState.mode === 'mouse' && gameState.status === 'playing') {
+                    gameState.cursor.x = e.clientX;
+                    gameState.cursor.y = e.clientY;
+                }
+            });
+            
+            window.addEventListener('touchmove', (e) => {
+                if(gameState.mode === 'mouse' && gameState.status === 'playing') {
+                    gameState.cursor.x = e.touches[0].clientX;
+                    gameState.cursor.y = e.touches[0].clientY;
+                }
+            }, {passive: true});
+
+            window.addEventListener('mousedown', () => simulateClick(true));
+            window.addEventListener('mouseup', () => simulateClick(false));
+            window.addEventListener('touchstart', () => simulateClick(true));
+            window.addEventListener('touchend', () => simulateClick(false));
+        }
+
+        function simulateClick(isDown) {
+            if(gameState.mode === 'mouse' && gameState.status === 'playing') {
+                gameState.cursor.isClicking = isDown;
+                if (isDown) attemptClassification();
+            }
+        }
+
+        document.getElementById('btn-start-ar').addEventListener('click', async () => {
+            await Tone.start();
+            initSound();
+            initAR();
+        });
+        
+        document.getElementById('btn-start-mouse').addEventListener('click', async () => {
+            await Tone.start();
+            initSound();
+            initGame('mouse');
+        });
+
+        document.getElementById('fallback-btn').addEventListener('click', () => {
+            gameState.mode = 'mouse';
+            setupMouseFallback();
+            if(camera) {
+                camera.stop();
+                DOM.video.classList.add('hidden');
+                DOM.video.style.display = 'none';
+            }
+        });
+
+        requestAnimationFrame(drawLoop);
+    </script>
+</body>
+</html>
